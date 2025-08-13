@@ -1,0 +1,1197 @@
+//
+//  MainViewController.swift
+//  StreetDrop
+//
+//  Created by Joseph Cha on 2023/05/02.
+//
+
+import CoreLocation
+import UIKit
+
+import NMapsMap
+import RxCocoa
+import RxRelay
+import RxSwift
+import SnapKit
+
+final class MainViewController: UIViewController, Toastable, Alertable {
+    private var viewModel: MainViewModel
+    private let currentLocationMarker = NMFMarker()
+    private let disposeBag = DisposeBag()
+    private let viewDidLoadEvent = PublishRelay<Void>()
+    private let viewWillAppearEvent = PublishRelay<Void>()
+    private let viewDidAppearEvent: PublishRelay<Void> = .init()
+    private let poiMarkerDidTapEvent = PublishRelay<NMFMarker>()
+    private let cameraDidStopEvent = PublishRelay<(latitude: Double, longitude: Double)>()
+    private var outsideRadiusCountForRandom = 0
+    
+    var cellWidth: Double? {
+        guard let layout = self.droppedMusicWithinAreaCollectionView.collectionViewLayout as? UICollectionViewFlowLayout else { return nil }
+        return layout.itemSize.width
+    }
+
+    init(viewModel: MainViewModel) {
+        self.viewModel = viewModel
+        super.init(nibName: nil, bundle: nil)
+        
+        self.viewModel.locationManager.viewControllerDelegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        self.configureUI()
+        self.bindAction()
+        self.bindViewModel()
+
+        viewModel.locationManager.viewControllerDelegate = self
+        self.viewDidLoadEvent.accept(Void())
+    }
+    
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        self.viewWillAppearEvent.accept(Void())
+    }
+    
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        viewDidAppearEvent.accept(Void())
+    }
+    
+    // MARK: - UI
+    
+    private lazy var naverMapView: NMFMapView = {
+        let mapView = NMFMapView()
+        mapView.mapType = .navi
+        mapView.isNightModeEnabled = true
+        mapView.addCameraDelegate(delegate: self)
+        mapView.extent = NMGLatLngBounds(
+            southWestLat: 33,
+            southWestLng: 123,
+            northEastLat: 42,
+            northEastLng: 133
+        )
+        mapView.minZoomLevel = 5
+        
+        return mapView
+    }()
+    
+    private lazy var locationOverlay: NMFLocationOverlay = {
+        let locationOverlay = self.naverMapView.locationOverlay
+        locationOverlay.hidden = false
+        locationOverlay.icon = NMFOverlayImage(name: "locationOverlayIcon")
+        locationOverlay.circleRadius = viewModel.userCircleRadius / naverMapView.projection.metersPerPixel()
+        locationOverlay.circleColor = UIColor.primary500_16
+        
+        return locationOverlay
+    }()
+    
+    private lazy var topCoverImageView: UIImageView = {
+        let imageView = UIImageView()
+        imageView.image = UIImage(named: "topCover")
+        return imageView
+    }()
+    
+    private lazy var locationStackView: UIStackView = {
+        let stackView = UIStackView()
+        stackView.axis = .horizontal
+        stackView.spacing = 2
+        stackView.backgroundColor = .clear
+        stackView.alignment = .center
+        return stackView
+    }()
+    
+    private lazy var myLocationButton: UIButton = {
+        let button = UIButton()
+        button.setImage(UIImage(named: "myLocationButton.png"), for: .normal)
+        return button
+    }()
+    
+    private lazy var locationIconImageView: UIImageView = {
+        let imageView = UIImageView()
+        imageView.image = UIImage(named: "locationIcon.png")
+        imageView.contentMode = .scaleAspectFit
+        return imageView
+    }()
+    
+    private lazy var locationLabel: UILabel = {
+        let label = UILabel()
+        label.font = .pretendard(size: 20, weightName: .bold)
+        label.textColor = UIColor.gray50
+        label.text = "위치 정보 없음"
+        return label
+    }()
+    
+    private lazy var musicDroppedCountContainerView: UIView = {
+        let view = UIView()
+        view.layer.cornerRadius = 16
+        view.backgroundColor = UIColor.gray900_75
+        return view
+    }()
+    
+    private lazy var musicDroppedCountLabel: UILabel = {
+        let label = UILabel()
+        label.font = .pretendard(size: 14, weightName: .medium)
+        label.textColor = UIColor.white_60
+        label.text = "드랍된 음악 0개"
+        return label
+    }()
+
+    private lazy var soundtrackMemoryButton: UIButton = {
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = "MY SOUNDTRACK"
+        configuration.image = UIImage(systemName: "music.note.house.fill")
+        configuration.imagePadding = 7
+        configuration.baseForegroundColor = .white
+        configuration.baseBackgroundColor = UIColor.gray900_75
+        configuration.cornerStyle = .capsule
+
+        let button = UIButton(configuration: configuration)
+        button.titleLabel?.font = .pretendard(size: 12, weightName: .bold)
+        button.addTarget(self, action: #selector(didTapSoundtrackMemoryButton), for: .touchUpInside)
+        return button
+    }()
+    
+    private lazy var bottomBarImageView: UIImageView = {
+        let imageView = UIImageView()
+        imageView.backgroundColor = .clear
+        imageView.image = UIImage(named: "bottomBar.png")
+        imageView.isUserInteractionEnabled = true
+        return imageView
+    }()
+    
+    private lazy var homeButton: UIButton = {
+        let button = UIButton()
+        button.setImage(UIImage(named: "homeButton.png")?.withRenderingMode(.alwaysTemplate), for: .normal)
+        button.tintColor = UIColor.primary400
+        return button
+    }()
+    
+    private lazy var myPageButton: UIButton = {
+        let button = UIButton()
+        button.setImage(UIImage(named: "myPageButton.png")?.withRenderingMode(.alwaysTemplate), for: .normal)
+        button.tintColor = UIColor(red: 1, green: 1, blue: 1, alpha: 0.6)
+        return button
+    }()
+    
+    private lazy var musicDropButton: UIButton = {
+        let button = UIButton()
+        button.setImage(UIImage(named: "musicDropButton.png"), for: .normal)
+        button.contentVerticalAlignment = .fill
+        button.contentHorizontalAlignment = .fill
+        return button
+    }()
+    
+    private lazy var droppedMusicWithinAreaCollectionView: UICollectionView = {
+        let layout = UICollectionViewFlowLayout()
+        layout.scrollDirection = .horizontal
+        layout.itemSize = CGSize(width: UIScreen.main.bounds.width / 3, height: 260)
+        layout.minimumLineSpacing = 0
+        let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView.register(DroppedMusicWithinAreaCollectionViewCell.self, forCellWithReuseIdentifier: DroppedMusicWithinAreaCollectionViewCell.identifier)
+        collectionView.isPagingEnabled = true
+        collectionView.decelerationRate = .fast
+        collectionView.showsHorizontalScrollIndicator = false
+        collectionView.backgroundColor = .clear
+        collectionView.isHidden = true
+        
+        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        collectionView.addGestureRecognizer(panGesture)
+        collectionView.isScrollEnabled = false
+
+        return collectionView
+    }()
+    
+    private lazy var bottomCoverImageView: UIImageView = {
+        let imageView = UIImageView()
+        imageView.image = UIImage(named: "bottomCover.png")
+        imageView.isHidden = true
+        return imageView
+    }()
+    
+    private lazy var backToMapButton: UIButton = {
+        let button = UIButton()
+        button.isHidden = true
+        return button
+    }()
+    
+    private lazy var bubbleCommentView: BubbleCommentView = {
+        let view = BubbleCommentView()
+        view.configure(with: "음악을 드랍해보세요!")
+        view.isHidden = true
+        return view
+    }()
+}
+
+private extension MainViewController {
+    // MARK: - UI
+    
+    func configureUI() {
+        
+        // MARK: - NavigationBar
+        
+        self.navigationController?.isNavigationBarHidden = true
+        
+        // MARK: - Map View
+        
+        self.view.addSubview(self.naverMapView)
+        self.naverMapView.frame = self.view.frame
+        
+        // MARK: - Top Cover ImageView
+        
+        self.view.addSubview(self.topCoverImageView)
+        self.topCoverImageView.snp.makeConstraints { make in
+            make.top.equalToSuperview()
+            make.leading.trailing.equalToSuperview()
+        }
+        
+        // MARK: - Location StackView
+        
+        self.view.addSubview(self.locationStackView)
+        self.locationStackView.snp.makeConstraints { make in
+            make.top.equalTo(self.view.safeAreaLayoutGuide).offset(12)
+            make.centerX.equalToSuperview()
+            make.height.equalTo(24)
+        }
+        
+        // MARK: - Location Icon ImageView
+        
+        self.locationStackView.addArrangedSubview(self.locationIconImageView)
+        self.locationIconImageView.snp.makeConstraints { make in
+            make.width.height.equalTo(24)
+        }
+        
+        // MARK: - Location Label
+        
+        self.locationStackView.addArrangedSubview(self.locationLabel)
+        
+        // MARK: - Music Dropped Count Container View
+        
+        self.view.addSubview(self.musicDroppedCountContainerView)
+        self.musicDroppedCountContainerView.snp.makeConstraints { make in
+            make.top.equalTo(self.locationStackView.snp.bottom).offset(10)
+            make.height.equalTo(36)
+            make.centerX.equalToSuperview()
+        }
+        
+        // MARK: - Music Dropped Count Label
+        
+        self.musicDroppedCountContainerView.addSubview(self.musicDroppedCountLabel)
+        self.musicDroppedCountLabel.snp.makeConstraints { make in
+            make.centerY.equalToSuperview()
+            make.left.right.equalToSuperview().inset(16)
+        }
+
+        self.view.addSubview(self.soundtrackMemoryButton)
+        self.soundtrackMemoryButton.snp.makeConstraints { make in
+            make.top.equalTo(self.musicDroppedCountContainerView.snp.bottom).offset(10)
+            make.centerX.equalToSuperview()
+            make.height.equalTo(36)
+        }
+        
+        // MARK: - My Location Button
+        
+        self.view.addSubview(self.myLocationButton)
+        self.myLocationButton.snp.makeConstraints {
+            $0.centerY.equalTo(self.musicDroppedCountContainerView)
+            $0.width.height.equalTo(38.4)
+            $0.trailing.equalTo(self.view.safeAreaLayoutGuide).inset(28.8)
+        }
+        
+        // MARK: - Bottom Bar IamgeView
+        
+        self.view.addSubview(self.bottomBarImageView)
+        self.bottomBarImageView.snp.makeConstraints { make in
+            make.bottom.equalTo(self.view.safeAreaLayoutGuide).inset(16)
+            make.left.right.equalTo(self.view.safeAreaLayoutGuide).inset(67)
+            make.height.equalTo(self.bottomBarImageView.snp.width).multipliedBy(0.2)
+        }
+        
+        // MARK: - Home Button
+        
+        self.bottomBarImageView.addSubview(self.homeButton)
+        self.homeButton.snp.makeConstraints { make in
+            make.top.bottom.equalToSuperview().inset(8)
+            make.width.equalTo(self.homeButton.snp.height)
+            make.left.equalToSuperview().inset(28)
+        }
+        
+        // MARK: - My Page Button
+        
+        self.bottomBarImageView.addSubview(self.myPageButton)
+        self.myPageButton.snp.makeConstraints { make in
+            make.top.bottom.equalToSuperview().inset(8)
+            make.width.equalTo(self.myPageButton.snp.height)
+            make.right.equalToSuperview().inset(28)
+        }
+        
+        // MARK: - Music Drop Button
+        
+        self.view.addSubview(self.musicDropButton)
+        self.musicDropButton.snp.makeConstraints { make in
+            make.centerX.equalTo(self.bottomBarImageView)
+            make.width.equalTo(self.bottomBarImageView).multipliedBy(0.2)
+            make.height.equalTo(self.musicDropButton.snp.width)
+            make.bottom.equalTo(self.bottomBarImageView.snp.bottom)
+        }
+        self.view.layoutIfNeeded()
+        self.musicDropButton.snp.updateConstraints { make in
+            make.bottom.equalTo(self.bottomBarImageView.snp.bottom).inset(self.musicDropButton.frame.height / 3)
+        }
+        
+        // MARK: - Back To Map Button
+        
+        self.view.addSubview(backToMapButton)
+        self.backToMapButton.snp.makeConstraints { make in
+            make.left.right.top.bottom.equalToSuperview()
+        }
+        
+        // MARK: - Bottom Cover ImageView
+        
+        self.view.addSubview(self.bottomCoverImageView)
+        self.bottomCoverImageView.snp.makeConstraints { make in
+            make.left.right.equalToSuperview()
+            make.top.equalTo(self.view.snp.bottom)
+            make.height.equalTo(152)
+        }
+        
+        // MARK: - Dropped Music Within Area CollectionView
+        
+        self.view.addSubview(self.droppedMusicWithinAreaCollectionView)
+        self.droppedMusicWithinAreaCollectionView.snp.makeConstraints { make in
+            make.left.right.equalTo(self.view.safeAreaLayoutGuide)
+            make.top.equalTo(self.view.snp.bottom)
+            make.height.equalTo(260)
+        }
+        self.droppedMusicWithinAreaCollectionView.delegate = self
+        self.setupInitialOffset()
+        
+        // MARK: - Bubble Comment View
+        
+        self.view.addSubview(bubbleCommentView)
+        bubbleCommentView.snp.makeConstraints {
+            $0.centerX.equalToSuperview()
+            $0.top.greaterThanOrEqualTo(self.view.safeAreaLayoutGuide).inset(16)
+            $0.width.lessThanOrEqualTo(self.view.safeAreaLayoutGuide).inset(32)
+            $0.bottom.equalTo(musicDropButton.snp.top).offset(-10)
+        }
+    }
+    
+    // MARK: - Action Binding
+    
+    private func bindAction() {
+        backToMapButton.rx.tap
+            .bind { [weak self] in
+                guard let self = self else { return }
+                // 다이얼이 내려가는 경우
+                self.dismissDial()
+            }
+            .disposed(by: disposeBag)
+        
+// TODO: 1차 앱스토어 배포때는 실시간 위치정보 갱신을 하지 않기에, 추후 드랍하기 버튼 누를 시, 실제 사용자 위치정보는 좀 더 검토 필요
+        musicDropButton.rx.tap
+            .do { [weak self] _ in
+                if let self = self,
+                   bubbleCommentView.isDescendant(of: view) {
+                    bubbleCommentView.removeFromSuperview()
+                }
+            }
+            .bind { [weak self] in
+                guard let self = self,
+                      self.viewModel.locationManager.checkAuthorizationStatus()
+                else { return }
+                
+                let searchingMusicViewController = SearchingMusicViewController(
+                    viewModel: DefaultSearchingMusicViewModel(
+                        location: self.viewModel.location
+                    )
+                )
+                self.navigationController?.pushViewController(
+                    searchingMusicViewController,
+                    animated: true
+                )
+            }
+            .disposed(by: disposeBag)
+
+        droppedMusicWithinAreaCollectionView.rx.itemSelected
+            .do(afterNext: { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    self?.dismissDial()
+                }
+            })
+            .bind(with: self) { owner, indexPath in
+                let communityViewModel = CommunityViewModel(
+                    communityInfos: owner.viewModel.musicWithinArea,
+                    index: indexPath.row
+                )
+                communityViewModel.blockSuccessToast
+                    .bind(with: self) { owner, toastTitle in
+                        owner.navigationController?.popToRootViewController(animated: true)
+                        owner.showSuccessNormalToast(
+                            text: toastTitle,
+                            bottomInset: 96,
+                            duration: .now() + 3
+                        )
+                    }.disposed(by: self.disposeBag)
+
+                let communityViewController = CommunityViewController(viewModel: communityViewModel)
+
+                owner.navigationController?.pushViewController(
+                    communityViewController,
+                    animated: true
+                )
+            }
+            .disposed(by: disposeBag)
+        
+        myPageButton.rx.tap
+            .bind { [weak self] in
+                let myPageViewController = MyPageViewController(viewModel: MyPageViewModel())
+                self?.navigationController?.pushViewController(
+                    myPageViewController,
+                    animated: true
+                )
+            }
+            .disposed(by: disposeBag)
+    }
+
+    @objc
+    private func didTapSoundtrackMemoryButton() {
+        let controller = SoundtrackMemorySheetViewController(
+            currentPlaceName: locationLabel.text ?? "현재 위치"
+        )
+        if let sheet = controller.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        present(controller, animated: true)
+    }
+    
+    // MARK: - Data Binding
+    
+    private func bindViewModel() {
+        let input = MainViewModel.Input(
+            viewDidLoadEvent: self.viewDidLoadEvent,
+            viewWillAppearEvent: self.viewWillAppearEvent,
+            viewDidAppearEvent: viewDidAppearEvent.asObservable(),
+            poiMarkerDidTapEvent: self.poiMarkerDidTapEvent,
+            cameraDidStopEvent: self.cameraDidStopEvent,
+            homeButtonDidTapEvent: self.homeButton.rx.tap,
+            myLocationButtonDidTapEvent: self.myLocationButton.rx.tap
+        )
+        let output = viewModel.convert(input: input, disposedBag: disposeBag)
+        
+        output.location
+            .bind(onNext: { [weak self] location in
+                self?.drawCurrentLocationMarker(location: location)
+            })
+            .disposed(by: disposeBag)
+        
+        output.cameraShouldGoCurrentLocation
+            .bind { [weak self] location in
+                self?.moveCameraToCurrentLocation(location: location)
+            }
+            .disposed(by: disposeBag)
+        
+        output.pois
+            .bind(onNext: { [weak self] pois in
+                self?.removeAllPOIMarkers()
+                let pois = pois.sorted { $0.id < $1.id }
+                for poi in pois {
+                    self?.setPOIMarker(item: poi, poiID: poi.id)
+                }
+            })
+            .disposed(by: disposeBag)
+        
+        output.musicCount
+            .bind(onNext: { [weak self] musicCount in
+                self?.musicDroppedCountLabel.text = "드랍된 음악 \(musicCount)개"
+            })
+            .disposed(by: disposeBag)
+        
+        output.cameraAddress
+            .bind(onNext: { [weak self] address in
+                self?.locationLabel.text = address
+            })
+            .disposed(by: disposeBag)
+        
+        output.musicWithinArea
+            .bind(to: droppedMusicWithinAreaCollectionView.rx.items(cellIdentifier: DroppedMusicWithinAreaCollectionViewCell.identifier, cellType: DroppedMusicWithinAreaCollectionViewCell.self)) { index, item, cell in
+                cell.setData(item: item)
+            }
+            .disposed(by: disposeBag)
+        
+        output.tappedPOIIndex
+            .bind { index in
+                if self.viewModel.musicWithinArea.count > 3 {
+                    self.viewModel.currentIndex = index + 2
+                } else {
+                    self.viewModel.currentIndex = index
+                }
+                let currentIndex = self.viewModel.currentIndex
+                guard let cellWidth = self.cellWidth else { return }
+
+                self.droppedMusicWithinAreaCollectionView.setContentOffset(
+                    CGPoint(x: cellWidth * CGFloat(currentIndex - 1), y: .zero),
+                    animated: false
+                )
+                //  다이얼이 올라오는 경우
+                self.presentDial(currentIndex: currentIndex)
+            }
+            .disposed(by: disposeBag)
+
+        output.showFirstComment
+            .bind(with: self) { owner, prompt in
+                owner.bubbleCommentView.isHidden = false
+                owner.bubbleCommentView.configure(with: prompt)
+            }
+            .disposed(by: disposeBag)
+        
+        output.presentSharedMusicView
+            .delay(.seconds(1), scheduler: MainScheduler.instance)
+            .bind(with: self) { owner, itemID in
+                let communityViewModel = CommunityViewModel(
+                    communityInfos: [],
+                    index: 0
+                )
+                communityViewModel.itemID = itemID
+                
+                let communityView = CommunityViewController(viewModel: communityViewModel)
+                owner.navigationController?.pushViewController(communityView, animated: true)
+            }
+            .disposed(by: disposeBag)
+        
+        output.tipPopUpShow
+            .bind(with: self) { owner, popUpInfomation in
+                owner.showTipPopUp(
+                    contentTitle: popUpInfomation.contentTitle,
+                    contentDescription: popUpInfomation.contentDescription,
+                    nextAction: { [weak self] in
+                            guard let self = self,
+                                  self.viewModel.locationManager.checkAuthorizationStatus()
+                            else { return }
+                            
+                            let searchingMusicViewController = SearchingMusicViewController(
+                                viewModel: DefaultSearchingMusicViewModel(
+                                    location: self.viewModel.location
+                                )
+                            )
+                            self.navigationController?.pushViewController(
+                                searchingMusicViewController,
+                                animated: true
+                            )
+                    }, 
+                    cancelAction: { [weak self] in
+                        guard let self = self else { return }
+                        viewModel.postPopUpUserReading(popUpInfomation: popUpInfomation, disposeBag: disposeBag)
+                    },
+                    disposeBag: owner.disposeBag
+                )
+            }
+            .disposed(by: disposeBag)
+        
+        output.congratulationsLevelUpPopUpShow
+            .bind(with: self) { owner, popUpInfomation in
+                owner.showCongratulationsLevelUpPopUp(
+                    contentTitle: popUpInfomation.contentTitle,
+                    contentDescription: popUpInfomation.contentDescription, 
+                    popupName: popUpInfomation.popupName,
+                    remainCount: popUpInfomation.levelUpRemainCount,
+                    nextAction: { [weak self] in
+                        guard let self = self else { return }
+                        viewModel.postPopUpUserReading(popUpInfomation: popUpInfomation, disposeBag: disposeBag)
+                    },
+                    disposeBag: owner.disposeBag
+                )
+            }
+            .disposed(by: disposeBag)
+    }
+}
+
+// MARK: - CollectionView
+
+extension MainViewController: UICollectionViewDelegate, UICollectionViewDelegateFlowLayout {
+    func setupInitialOffset() {
+        guard let cellWidth = self.cellWidth else { return }
+        droppedMusicWithinAreaCollectionView.setContentOffset(
+            CGPoint(x: cellWidth, y: .zero),
+            animated: false
+        )
+    }
+    
+    func presentDial(currentIndex: Int) {
+        UIView.animate(withDuration: 0.3, animations: {
+            self.droppedMusicWithinAreaCollectionView.isHidden = false
+            self.bottomCoverImageView.isHidden = false
+            self.backToMapButton.isHidden = false
+            
+            self.droppedMusicWithinAreaCollectionView.snp.remakeConstraints { make in
+                make.left.right.equalTo(self.view.safeAreaLayoutGuide)
+                make.bottom.equalTo(self.view.safeAreaLayoutGuide).inset(24)
+                make.height.equalTo(260)
+            }
+            self.bottomCoverImageView.snp.remakeConstraints { make in
+                make.left.right.bottom.equalToSuperview()
+                make.height.equalTo(152)
+            }
+            
+            self.view.layoutIfNeeded()
+            
+            guard let cellWidth = self.cellWidth else { return }
+            self.droppedMusicWithinAreaCollectionView.setContentOffset(
+                CGPoint(x: cellWidth * CGFloat(currentIndex - 1), y: .zero),
+                animated: false
+            )
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.1, animations: {
+                if let middleCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: currentIndex, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                    middleCell.middleCell()
+                }
+        
+                self.view.layoutIfNeeded()
+            })
+        })
+    }
+    
+    func dismissDial() {
+        let music = self.viewModel.musicWithinArea[self.viewModel.currentIndex]
+        let poiID = music.id
+        guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+        self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+        UIView.animate(withDuration: 0.3, animations: {
+            self.droppedMusicWithinAreaCollectionView.snp.remakeConstraints { make in
+                make.left.right.equalTo(self.view.safeAreaLayoutGuide)
+                make.top.equalTo(self.view.snp.bottom)
+                make.height.equalTo(260)
+            }
+            self.bottomCoverImageView.snp.remakeConstraints { make in
+                make.left.right.equalToSuperview()
+                make.top.equalTo(self.view.snp.bottom)
+                make.height.equalTo(152)
+            }
+            
+            if let middleCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: self.viewModel.currentIndex, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                middleCell.sideCell()
+            }
+            
+            self.view.layoutIfNeeded()
+        }, completion: { _ in
+            self.droppedMusicWithinAreaCollectionView.isHidden = true
+            self.bottomCoverImageView.isHidden = true
+            self.backToMapButton.isHidden = true
+            self.bubbleCommentView.isHidden = false
+        })
+    }
+    
+    @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .ended, .cancelled:
+            let velocity = gesture.velocity(in: droppedMusicWithinAreaCollectionView)
+            let targetIndex = (velocity.x > 0) ? viewModel.currentIndex - 1 : viewModel.currentIndex + 1
+            scrollToItem(at: targetIndex)
+        default:
+            break
+        }
+    }
+
+    func scrollToItem(at index: Int) {
+        guard let cellWidth = self.cellWidth else { return }
+        // 무한스크롤 O
+        if viewModel.musicWithinArea.count > 3 {
+            if index == 1 { // 맨 왼쪽 도달
+                if let preRightCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index + 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                    preRightCell.sideCell() {
+                        let music = self.viewModel.musicWithinArea[index + 1]
+                        let poiID = music.id
+                        guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                        self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                    }
+                }
+                
+                droppedMusicWithinAreaCollectionView.setContentOffset(
+                    CGPoint(x: cellWidth * CGFloat(viewModel.musicWithinArea.count - 3), y: .zero),
+                    animated: false
+                )
+                droppedMusicWithinAreaCollectionView.setContentOffset(
+                    CGPoint(x: cellWidth * CGFloat(viewModel.musicWithinArea.count - 4), y: .zero),
+                    animated: true
+                )
+                self.view.layoutIfNeeded()
+                viewModel.currentIndex = viewModel.musicWithinArea.count - 3
+                
+                if let curRightCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: self.viewModel.currentIndex + 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                    curRightCell.middleCell() {
+                        let music = self.viewModel.musicWithinArea[self.viewModel.currentIndex + 1]
+                        let poiID = music.id
+                        guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                        self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: true)
+                    }
+                }
+                self.view.layoutIfNeeded()
+                
+                UIView.animate(withDuration: 0.2) {
+                    if let rightCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: self.viewModel.currentIndex + 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        rightCell.sideCell() {
+                            let music = self.viewModel.musicWithinArea[self.viewModel.currentIndex + 1]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                        }
+                    }
+                    
+                    if let middleCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: self.viewModel.currentIndex, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        middleCell.middleCell() {
+                            let music = self.viewModel.musicWithinArea[self.viewModel.currentIndex]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: true)
+                        }
+                    }
+                    self.view.layoutIfNeeded()
+                }
+            }
+            else if index == (viewModel.musicWithinArea.count - 2) { // 맨 오른쪽 도달
+                if let preLeftCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index - 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                    preLeftCell.sideCell() {
+                        let music = self.viewModel.musicWithinArea[index - 1]
+                        let poiID = music.id
+                        guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                        self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                    }
+                }
+                
+                droppedMusicWithinAreaCollectionView.setContentOffset(
+                    CGPoint(x: 0, y: .zero),
+                    animated: false
+                )
+                droppedMusicWithinAreaCollectionView.setContentOffset(
+                    CGPoint(x: cellWidth, y: .zero),
+                    animated: true
+                )
+                self.view.layoutIfNeeded()
+                viewModel.currentIndex = 2
+                
+                if let curLeftCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                    curLeftCell.middleCell() {
+                        let music = self.viewModel.musicWithinArea[1]
+                        let poiID = music.id
+                        guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                        self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: true)
+                    }
+                }
+                self.view.layoutIfNeeded()
+                
+                UIView.animate(withDuration: 0.2) {
+                    if let leftCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        leftCell.sideCell() {
+                            let music = self.viewModel.musicWithinArea[1]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                        }
+                    }
+                    if let middleCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: self.viewModel.currentIndex, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        middleCell.middleCell() {
+                            let music = self.viewModel.musicWithinArea[self.viewModel.currentIndex]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: true)
+                        }
+                    }
+                    self.view.layoutIfNeeded()
+                }
+            }
+            else { // 중간
+                UIView.animate(withDuration: 0.2) {
+                    if let middleCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        middleCell.middleCell() {
+                            let music = self.viewModel.musicWithinArea[index]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: true)
+                        }
+                    }
+                    
+                    if let leftCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index - 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        leftCell.sideCell() {
+                            let music = self.viewModel.musicWithinArea[index - 1]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                        }
+                    }
+                    
+                    if let rightCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index + 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        rightCell.sideCell() {
+                            let music = self.viewModel.musicWithinArea[index + 1]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                        }
+                    }
+                    
+                    self.view.layoutIfNeeded()
+                }
+                
+                droppedMusicWithinAreaCollectionView.setContentOffset(
+                    CGPoint(x: cellWidth * CGFloat(index - 1), y: .zero),
+                    animated: true
+                )
+                viewModel.currentIndex = index
+            }
+        }
+        // 무한스크롤 X
+        else {
+            if (index == -1) || (index  == viewModel.musicWithinArea.count) { // 양 끝
+                return
+            }
+            else { // 중간
+                UIView.animate(withDuration: 0.2) {
+                    if let middleCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        middleCell.middleCell() {
+                            let music = self.viewModel.musicWithinArea[index]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: true)
+                        }
+                    }
+                    
+                    if let leftCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index - 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        leftCell.sideCell() {
+                            let music = self.viewModel.musicWithinArea[index - 1]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                        }
+                    }
+                    
+                    if let rightCell = self.droppedMusicWithinAreaCollectionView.cellForItem(at: IndexPath(row: index + 1, section: 0)) as? DroppedMusicWithinAreaCollectionViewCell {
+                        rightCell.sideCell() {
+                            let music = self.viewModel.musicWithinArea[index + 1]
+                            let poiID = music.id
+                            guard let poiMarker = self.viewModel.poiDict[poiID] else { return }
+                            self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: false)
+                        }
+                    }
+                    
+                    self.view.layoutIfNeeded()
+                }
+                
+                droppedMusicWithinAreaCollectionView.setContentOffset(
+                    CGPoint(x: cellWidth * CGFloat(index - 1), y: .zero),
+                    animated: true
+                )
+                viewModel.currentIndex = index
+            }
+        }
+    }
+}
+
+// MARK: - Map
+
+private extension MainViewController {
+    func drawCurrentLocationMarker(location: CLLocation) {
+        locationOverlay.location = NMGLatLng(lat: location.coordinate.latitude,
+                                             lng: location.coordinate.longitude)
+    }
+    
+    func moveCameraToCurrentLocation(location: CLLocation) {
+        self.naverMapView.moveCamera(NMFCameraUpdate(scrollTo: NMGLatLng(lat: location.coordinate.latitude,lng: location.coordinate.longitude)))
+        self.naverMapView.moveCamera(NMFCameraUpdate(zoomTo: 14))
+        self.locationOverlay.circleRadius = viewModel.userCircleRadius / naverMapView.projection.metersPerPixel()
+    }
+    
+    func combineImages(markerFrame: UIImage, album: UIImage) -> UIImage? {
+        let size = markerFrame.size
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        
+        let albumRect = CGRect(x: 3, y: 3, width: album.size.width, height: album.size.height)
+        album.draw(in: albumRect)
+        
+        let markerRect = CGRect(x: 0, y: 0, width: markerFrame.size.width, height: markerFrame.size.height)
+        markerFrame.draw(in: markerRect, blendMode: .normal, alpha: 1)
+        
+        
+        let combinedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return combinedImage
+    }
+    
+    func setPOIMarker(item: PoiEntity, poiID: Int, isActivated: Bool = false) {
+        let poiMarker = NMFMarker()
+        poiMarker.tag = UInt(poiID)
+        
+        let defaultMusicMarkerImage = UIImage(named: "musicMarker") ?? UIImage()
+        poiMarker.iconImage = NMFOverlayImage(image: defaultMusicMarkerImage)
+        UIImage.load(with: item.imageURL)
+            .subscribe(onSuccess: { albumImage in
+                self.viewModel.markerAlbumImages[poiID] = albumImage
+                self.drawPOIMarker(poiMarker: poiMarker,poiID: poiID, isActivated: false)
+            })
+            .disposed(by: disposeBag)
+        
+        poiMarker.position = NMGLatLng(lat: item.lat, lng: item.lon)
+        poiMarker.mapView = self.naverMapView
+        poiMarker.globalZIndex = 400000 // 네이버맵 sdk 오버레이 가이드를 참고한 zIndex 설정
+        viewModel.addPOIMarker(poiMarker)
+        viewModel.poiDict[poiID] = poiMarker
+        bindPOIMarker(poiMarker: poiMarker)
+    }
+    
+    func drawPOIMarker(poiMarker: NMFMarker, poiID: Int, isActivated: Bool) {
+        guard let albumImage = self.viewModel.markerAlbumImages[poiID] else { return }
+        let newSize = CGSize(width: 28, height: 28)
+        let resizedImage = albumImage.resized(to: newSize)?.withRoundedCorners(radius: newSize.width / 2) ?? UIImage()
+        var musicMarkFrameImage: UIImage
+        switch isActivated {
+        case true:
+            musicMarkFrameImage = UIImage(named: "musicMarkerFrameActivated") ?? UIImage()
+        case false:
+            musicMarkFrameImage = UIImage(named: "musicMarkerFrame") ?? UIImage()
+        }
+        if let combinedImage = self.combineImages(markerFrame: musicMarkFrameImage, album: resizedImage) {
+            poiMarker.iconImage = NMFOverlayImage(image: combinedImage)
+        }
+    }
+    
+    func bindPOIMarker(poiMarker: NMFMarker) {
+        poiMarker.touchHandler = { [weak self] (_: NMFOverlay) -> Bool in
+            guard let self = self else { return true }
+            self.bubbleCommentView.isHidden = true
+            
+            if self.viewModel.isWithin(latitude: poiMarker.position.lat, longitude: poiMarker.position.lng) {
+                let poiID = Int(poiMarker.tag)
+                self.drawPOIMarker(poiMarker: poiMarker, poiID: poiID, isActivated: true)
+                self.poiMarkerDidTapEvent.accept(poiMarker)
+            } else {
+                self.showFailNormalToast(
+                    text: [
+                        "반경 밖 음악을 듣고싶다면 레벨을 올려보세요!",
+                        "음악이 있는 위치로 직접 가야해요!",
+                        "반경 밖 음악을 듣고싶다면 위치를 이동해보세요!"
+                    ][outsideRadiusCountForRandom % 3],
+                    bottomInset: 96,
+                    duration: .now() + 3
+                )
+                outsideRadiusCountForRandom += 1
+            }
+            return true
+        }
+    }
+    
+    func removeAllPOIMarkers() {
+        viewModel.poiDict = [:]
+        viewModel.markerAlbumImages = [:]
+        viewModel.removeAllPOIMarkers()
+    }
+}
+
+//MARK: - 위치 권한 요청을 위해 설정으로 이동 유도 Alert
+extension MainViewController {
+    func requestLocationAuthorization() {
+        showLocationServiceRequestAlert()
+    }
+}
+
+// MARK: - 네이버 맵 카메라 Delegate
+
+extension MainViewController: NMFMapViewCameraDelegate {
+    func mapViewCameraIdle(_ mapView: NMFMapView) {
+        self.cameraDidStopEvent.accept((mapView.latitude, mapView.longitude))
+    }
+    
+    func mapView(_ mapView: NMFMapView, cameraIsChangingByReason reason: Int) {
+        self.locationOverlay.circleRadius = viewModel.userCircleRadius / naverMapView.projection.metersPerPixel()
+    }
+}
+
+private struct SoundtrackMemory: Codable {
+    let id: UUID
+    let placeName: String
+    let songTitle: String
+    let artistName: String
+    let note: String
+    let createdAt: Date
+}
+
+private final class SoundtrackMemorySheetViewController: UIViewController {
+    private static let storageKey = "soundtrack-map.memories.v1"
+
+    private let currentPlaceName: String
+    private var memories: [SoundtrackMemory] = []
+
+    private lazy var titleLabel: UILabel = {
+        let label = UILabel()
+        label.text = "MY SOUNDTRACK"
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 22, weight: .bold)
+        return label
+    }()
+
+    private lazy var subtitleLabel: UILabel = {
+        let label = UILabel()
+        label.text = "장소와 음악을 개인 기억으로 연결합니다."
+        label.textColor = UIColor.white.withAlphaComponent(0.55)
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        return label
+    }()
+
+    private lazy var addButton: UIButton = {
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = "이 장소에 음악 기억 남기기"
+        configuration.image = UIImage(systemName: "plus.circle.fill")
+        configuration.imagePadding = 8
+        configuration.baseBackgroundColor = UIColor.primary400
+        configuration.baseForegroundColor = .white
+        configuration.cornerStyle = .medium
+        let button = UIButton(configuration: configuration)
+        button.addTarget(self, action: #selector(didTapAddButton), for: .touchUpInside)
+        return button
+    }()
+
+    private lazy var tableView: UITableView = {
+        let tableView = UITableView(frame: .zero, style: .plain)
+        tableView.backgroundColor = .clear
+        tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "memory")
+        return tableView
+    }()
+
+    init(currentPlaceName: String) {
+        self.currentPlaceName = currentPlaceName
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(red: 0.07, green: 0.08, blue: 0.10, alpha: 1)
+        loadMemories()
+        configureLayout()
+    }
+
+    private func configureLayout() {
+        [titleLabel, subtitleLabel, addButton, tableView].forEach(view.addSubview)
+
+        titleLabel.snp.makeConstraints { make in
+            make.top.equalTo(view.safeAreaLayoutGuide).offset(12)
+            make.leading.trailing.equalToSuperview().inset(20)
+        }
+        subtitleLabel.snp.makeConstraints { make in
+            make.top.equalTo(titleLabel.snp.bottom).offset(6)
+            make.leading.trailing.equalTo(titleLabel)
+        }
+        addButton.snp.makeConstraints { make in
+            make.top.equalTo(subtitleLabel.snp.bottom).offset(18)
+            make.leading.trailing.equalToSuperview().inset(20)
+            make.height.equalTo(48)
+        }
+        tableView.snp.makeConstraints { make in
+            make.top.equalTo(addButton.snp.bottom).offset(14)
+            make.leading.trailing.bottom.equalToSuperview()
+        }
+    }
+
+    private func loadMemories() {
+        guard let data = UserDefaults.standard.data(forKey: Self.storageKey),
+              let decoded = try? JSONDecoder().decode([SoundtrackMemory].self, from: data)
+        else {
+            memories = []
+            return
+        }
+        memories = decoded.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func persistMemories() {
+        guard let data = try? JSONEncoder().encode(memories) else { return }
+        UserDefaults.standard.set(data, forKey: Self.storageKey)
+    }
+
+    @objc
+    private func didTapAddButton() {
+        let alert = UIAlertController(
+            title: currentPlaceName,
+            message: "지금 이 장소를 떠올리게 할 음악을 남겨보세요.",
+            preferredStyle: .alert
+        )
+        alert.addTextField { field in
+            field.placeholder = "곡 제목"
+        }
+        alert.addTextField { field in
+            field.placeholder = "아티스트"
+        }
+        alert.addTextField { field in
+            field.placeholder = "짧은 기억 또는 분위기"
+        }
+        alert.addAction(UIAlertAction(title: "취소", style: .cancel))
+        alert.addAction(UIAlertAction(title: "저장", style: .default) { [weak self, weak alert] _ in
+            guard let self,
+                  let songTitle = alert?.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !songTitle.isEmpty
+            else { return }
+
+            let artistName = alert?.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let note = alert?.textFields?[2].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let memory = SoundtrackMemory(
+                id: UUID(),
+                placeName: self.currentPlaceName,
+                songTitle: songTitle,
+                artistName: artistName,
+                note: note,
+                createdAt: Date()
+            )
+            self.memories.insert(memory, at: 0)
+            self.persistMemories()
+            self.tableView.reloadData()
+        })
+        present(alert, animated: true)
+    }
+}
+
+extension SoundtrackMemorySheetViewController: UITableViewDataSource, UITableViewDelegate {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        memories.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "memory", for: indexPath)
+        let memory = memories[indexPath.row]
+        var content = cell.defaultContentConfiguration()
+        content.text = memory.songTitle
+        let artist = memory.artistName.isEmpty ? "아티스트 미기록" : memory.artistName
+        let note = memory.note.isEmpty ? memory.placeName : "\(memory.placeName) · \(memory.note)"
+        content.secondaryText = "\(artist)\n\(note)"
+        content.textProperties.color = .white
+        content.secondaryTextProperties.color = UIColor.white.withAlphaComponent(0.48)
+        content.secondaryTextProperties.numberOfLines = 2
+        cell.contentConfiguration = content
+        cell.backgroundColor = .clear
+        cell.selectionStyle = .none
+        return cell
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        commit editingStyle: UITableViewCell.EditingStyle,
+        forRowAt indexPath: IndexPath
+    ) {
+        guard editingStyle == .delete else { return }
+        memories.remove(at: indexPath.row)
+        persistMemories()
+        tableView.deleteRows(at: [indexPath], with: .automatic)
+    }
+}
