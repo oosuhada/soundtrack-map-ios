@@ -93,11 +93,17 @@ extension AppDelegate: MessagingDelegate {
 
 private extension AppDelegate {
     func setupAppDependencies() {
-        FirebaseApp.configure()
-        NMFAuthManager.shared().clientId = Bundle.main.naverMapsClientID
+        if Bundle.main.hasFirebaseConfiguration {
+            FirebaseApp.configure()
+            Messaging.messaging().delegate = self
+        }
+
+        if let naverMapsClientID = Bundle.main.naverMapsClientID {
+            NMFAuthManager.shared().clientId = naverMapsClientID
+        }
+
         GADMobileAds.sharedInstance().start(completionHandler: nil)
         UNUserNotificationCenter.current().delegate = self
-        Messaging.messaging().delegate = self
     }
     
     func requestNotificationAuthorization() {

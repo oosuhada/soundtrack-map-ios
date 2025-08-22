@@ -144,21 +144,6 @@ final class MainViewController: UIViewController, Toastable, Alertable {
         label.text = "드랍된 음악 0개"
         return label
     }()
-
-    private lazy var soundtrackMemoryButton: UIButton = {
-        var configuration = UIButton.Configuration.filled()
-        configuration.title = "MY SOUNDTRACK"
-        configuration.image = UIImage(systemName: "music.note.house.fill")
-        configuration.imagePadding = 7
-        configuration.baseForegroundColor = .white
-        configuration.baseBackgroundColor = UIColor.gray900_75
-        configuration.cornerStyle = .capsule
-
-        let button = UIButton(configuration: configuration)
-        button.titleLabel?.font = .pretendard(size: 12, weightName: .bold)
-        button.addTarget(self, action: #selector(didTapSoundtrackMemoryButton), for: .touchUpInside)
-        return button
-    }()
     
     private lazy var bottomBarImageView: UIImageView = {
         let imageView = UIImageView()
@@ -288,13 +273,6 @@ private extension MainViewController {
         self.musicDroppedCountLabel.snp.makeConstraints { make in
             make.centerY.equalToSuperview()
             make.left.right.equalToSuperview().inset(16)
-        }
-
-        self.view.addSubview(self.soundtrackMemoryButton)
-        self.soundtrackMemoryButton.snp.makeConstraints { make in
-            make.top.equalTo(self.musicDroppedCountContainerView.snp.bottom).offset(10)
-            make.centerX.equalToSuperview()
-            make.height.equalTo(36)
         }
         
         // MARK: - My Location Button
@@ -460,18 +438,6 @@ private extension MainViewController {
                 )
             }
             .disposed(by: disposeBag)
-    }
-
-    @objc
-    private func didTapSoundtrackMemoryButton() {
-        let controller = SoundtrackMemorySheetViewController(
-            currentPlaceName: locationLabel.text ?? "현재 위치"
-        )
-        if let sheet = controller.sheetPresentationController {
-            sheet.detents = [.medium(), .large()]
-            sheet.prefersGrabberVisible = true
-        }
-        present(controller, animated: true)
     }
     
     // MARK: - Data Binding
@@ -1010,188 +976,5 @@ extension MainViewController: NMFMapViewCameraDelegate {
     
     func mapView(_ mapView: NMFMapView, cameraIsChangingByReason reason: Int) {
         self.locationOverlay.circleRadius = viewModel.userCircleRadius / naverMapView.projection.metersPerPixel()
-    }
-}
-
-private struct SoundtrackMemory: Codable {
-    let id: UUID
-    let placeName: String
-    let songTitle: String
-    let artistName: String
-    let note: String
-    let createdAt: Date
-}
-
-private final class SoundtrackMemorySheetViewController: UIViewController {
-    private static let storageKey = "soundtrack-map.memories.v1"
-
-    private let currentPlaceName: String
-    private var memories: [SoundtrackMemory] = []
-
-    private lazy var titleLabel: UILabel = {
-        let label = UILabel()
-        label.text = "MY SOUNDTRACK"
-        label.textColor = .white
-        label.font = .systemFont(ofSize: 22, weight: .bold)
-        return label
-    }()
-
-    private lazy var subtitleLabel: UILabel = {
-        let label = UILabel()
-        label.text = "장소와 음악을 개인 기억으로 연결합니다."
-        label.textColor = UIColor.white.withAlphaComponent(0.55)
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        return label
-    }()
-
-    private lazy var addButton: UIButton = {
-        var configuration = UIButton.Configuration.filled()
-        configuration.title = "이 장소에 음악 기억 남기기"
-        configuration.image = UIImage(systemName: "plus.circle.fill")
-        configuration.imagePadding = 8
-        configuration.baseBackgroundColor = UIColor.primary400
-        configuration.baseForegroundColor = .white
-        configuration.cornerStyle = .medium
-        let button = UIButton(configuration: configuration)
-        button.addTarget(self, action: #selector(didTapAddButton), for: .touchUpInside)
-        return button
-    }()
-
-    private lazy var tableView: UITableView = {
-        let tableView = UITableView(frame: .zero, style: .plain)
-        tableView.backgroundColor = .clear
-        tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "memory")
-        return tableView
-    }()
-
-    init(currentPlaceName: String) {
-        self.currentPlaceName = currentPlaceName
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = UIColor(red: 0.07, green: 0.08, blue: 0.10, alpha: 1)
-        loadMemories()
-        configureLayout()
-    }
-
-    private func configureLayout() {
-        [titleLabel, subtitleLabel, addButton, tableView].forEach(view.addSubview)
-
-        titleLabel.snp.makeConstraints { make in
-            make.top.equalTo(view.safeAreaLayoutGuide).offset(12)
-            make.leading.trailing.equalToSuperview().inset(20)
-        }
-        subtitleLabel.snp.makeConstraints { make in
-            make.top.equalTo(titleLabel.snp.bottom).offset(6)
-            make.leading.trailing.equalTo(titleLabel)
-        }
-        addButton.snp.makeConstraints { make in
-            make.top.equalTo(subtitleLabel.snp.bottom).offset(18)
-            make.leading.trailing.equalToSuperview().inset(20)
-            make.height.equalTo(48)
-        }
-        tableView.snp.makeConstraints { make in
-            make.top.equalTo(addButton.snp.bottom).offset(14)
-            make.leading.trailing.bottom.equalToSuperview()
-        }
-    }
-
-    private func loadMemories() {
-        guard let data = UserDefaults.standard.data(forKey: Self.storageKey),
-              let decoded = try? JSONDecoder().decode([SoundtrackMemory].self, from: data)
-        else {
-            memories = []
-            return
-        }
-        memories = decoded.sorted { $0.createdAt > $1.createdAt }
-    }
-
-    private func persistMemories() {
-        guard let data = try? JSONEncoder().encode(memories) else { return }
-        UserDefaults.standard.set(data, forKey: Self.storageKey)
-    }
-
-    @objc
-    private func didTapAddButton() {
-        let alert = UIAlertController(
-            title: currentPlaceName,
-            message: "지금 이 장소를 떠올리게 할 음악을 남겨보세요.",
-            preferredStyle: .alert
-        )
-        alert.addTextField { field in
-            field.placeholder = "곡 제목"
-        }
-        alert.addTextField { field in
-            field.placeholder = "아티스트"
-        }
-        alert.addTextField { field in
-            field.placeholder = "짧은 기억 또는 분위기"
-        }
-        alert.addAction(UIAlertAction(title: "취소", style: .cancel))
-        alert.addAction(UIAlertAction(title: "저장", style: .default) { [weak self, weak alert] _ in
-            guard let self,
-                  let songTitle = alert?.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !songTitle.isEmpty
-            else { return }
-
-            let artistName = alert?.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let note = alert?.textFields?[2].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let memory = SoundtrackMemory(
-                id: UUID(),
-                placeName: self.currentPlaceName,
-                songTitle: songTitle,
-                artistName: artistName,
-                note: note,
-                createdAt: Date()
-            )
-            self.memories.insert(memory, at: 0)
-            self.persistMemories()
-            self.tableView.reloadData()
-        })
-        present(alert, animated: true)
-    }
-}
-
-extension SoundtrackMemorySheetViewController: UITableViewDataSource, UITableViewDelegate {
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        memories.count
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "memory", for: indexPath)
-        let memory = memories[indexPath.row]
-        var content = cell.defaultContentConfiguration()
-        content.text = memory.songTitle
-        let artist = memory.artistName.isEmpty ? "아티스트 미기록" : memory.artistName
-        let note = memory.note.isEmpty ? memory.placeName : "\(memory.placeName) · \(memory.note)"
-        content.secondaryText = "\(artist)\n\(note)"
-        content.textProperties.color = .white
-        content.secondaryTextProperties.color = UIColor.white.withAlphaComponent(0.48)
-        content.secondaryTextProperties.numberOfLines = 2
-        cell.contentConfiguration = content
-        cell.backgroundColor = .clear
-        cell.selectionStyle = .none
-        return cell
-    }
-
-    func tableView(
-        _ tableView: UITableView,
-        commit editingStyle: UITableViewCell.EditingStyle,
-        forRowAt indexPath: IndexPath
-    ) {
-        guard editingStyle == .delete else { return }
-        memories.remove(at: indexPath.row)
-        persistMemories()
-        tableView.deleteRows(at: [indexPath], with: .automatic)
     }
 }

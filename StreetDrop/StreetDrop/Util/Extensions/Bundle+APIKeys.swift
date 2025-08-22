@@ -8,14 +8,26 @@
 import Foundation
 
 extension Bundle {
-    var naverMapsClientID: String {
+    var naverMapsClientID: String? {
         guard let file = self.path(forResource: "NaverMaps", ofType: "plist") else {
-            fatalError("NaverMaps.plist 파일이 없습니다.")
+            return nil
         }
-        guard let resource = NSDictionary(contentsOfFile: file) else { fatalError("파일 형식 에러") }
+        guard let resource = NSDictionary(contentsOfFile: file) else { return nil }
         guard let clientID = resource["NMFClientId"] as? String else {
-            fatalError("NaverMaps에 NMFClientId을 설정해주세요.")
+            return nil
         }
-        return clientID
+        return clientID.hasPrefix("PORTFOLIO_") ? nil : clientID
+    }
+
+    var hasFirebaseConfiguration: Bool {
+        guard
+            let file = self.path(forResource: "GoogleService-Info", ofType: "plist"),
+            let resource = NSDictionary(contentsOfFile: file),
+            let appID = resource["GOOGLE_APP_ID"] as? String
+        else {
+            return false
+        }
+
+        return !appID.hasPrefix("PORTFOLIO_")
     }
 }

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>NSUserTrackingUsageDescription</key>
-    <string>해당 ID는 스트릿드랍의 개인화된 광고를 제공하는데 사용됩니다.</string>
+	<string>해당 ID는 스트릿드랍의 개인화된 광고를 제공하는데 사용됩니다.</string>
     <key>SKAdNetworkItems</key>
     <array>
       <dict>
